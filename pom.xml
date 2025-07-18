@@ -17,18 +17,15 @@
         <java.version>1.8</java.version>
     </properties>
     <dependencies>
-            <!-- 腾讯云 Java SDK 核心库 -->
             <dependency>
                 <groupId>com.tencentcloudapi</groupId>
-                <artifactId>tencentcloud-sdk-java</artifactId>
-                <version>3.1.637</version> <!-- 请使用最新版本 -->
+                <artifactId>tencentcloud-sdk-java-common</artifactId>
+                <version>LATEST</version> <!-- 请使用最新版本 -->
             </dependency>
-
-            <!-- 腾讯云 CVM 服务专用库（可选但推荐） -->
-            <dependency>
+         <dependency>
                 <groupId>com.tencentcloudapi</groupId>
-                <artifactId>tencentcloud-sdk-java-cvm</artifactId>
-                <version>3.1.637</version> <!-- 版本号需与核心库一致 -->
+                <artifactId>tencentcloud-sdk-java-lkeap</artifactId>
+                <version>LATEST</version> <!-- 版本号需与核心库一致 -->
             </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
