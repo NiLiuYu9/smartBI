@@ -8,7 +8,6 @@
             <id property="id" column="id" jdbcType="BIGINT"/>
             <result property="goal" column="goal" jdbcType="VARCHAR"/>
         <result property="name" column="name" jdbcType="VARCHAR"/>
-            <result property="chartData" column="chartData" jdbcType="VARCHAR"/>
             <result property="chartType" column="chartType" jdbcType="VARCHAR"/>
             <result property="genChart" column="genChart" jdbcType="VARCHAR"/>
             <result property="genResult" column="genResult" jdbcType="VARCHAR"/>
@@ -24,4 +23,27 @@
         chartType,genChart,genResult,userId,
         createTime,updateTime,isDelete
     </sql>
+    <update id="createTable" parameterType="string">
+        ${sql}
+    </update>
+    <delete id="dropTable" parameterType="long">
+        DROP TABLE IF EXISTS chart_${chartId}
+    </delete>
+
+<!--    根据chartId获取chart数据-->
+    <select id="getDataByChartId" parameterType="long" resultType="list">
+        select * from chart_${chartId}
+    </select>
+
+<!--    批量插入csv数据-->
+    <insert id="batchInsert">
+        INSERT INTO chart_${chartId}
+        (<foreach collection="headers" item="h" separator=",">${h}</foreach>)
+        VALUES
+        <foreach collection="rows" item="row" separator=",">
+            (
+            <foreach collection="row" item="val" separator=",">#{val}</foreach>
+            )
+        </foreach>
+    </insert>
 </mapper>

@@ -1,5 +1,6 @@
 package com.yupi.springbootinit.controller;
 
+import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.google.gson.Gson;
@@ -14,9 +15,11 @@ import com.yupi.springbootinit.constant.UserConstant;
 import com.yupi.springbootinit.exception.BusinessException;
 import com.yupi.springbootinit.exception.ThrowUtils;
 import com.yupi.springbootinit.manager.AiManager;
+import com.yupi.springbootinit.manager.RedisLimiterManager;
 import com.yupi.springbootinit.model.dto.chart.*;
 import com.yupi.springbootinit.model.dto.file.UploadFileRequest;
 import com.yupi.springbootinit.model.entity.Chart;
+import com.yupi.springbootinit.model.entity.ChartResp;
 import com.yupi.springbootinit.model.entity.User;
 import com.yupi.springbootinit.model.enums.FileUploadBizEnum;
 import com.yupi.springbootinit.model.vo.BiResponse;
@@ -30,6 +33,7 @@ import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -37,6 +41,7 @@ import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import java.io.File;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 帖子接口
@@ -55,6 +60,9 @@ public class ChartController {
     @Autowired
     private AiManager aiManager;
 
+    @Autowired
+    private RedisLimiterManager redisLimiterManager;
+
     @Resource
     private UserService userService;
 
@@ -63,26 +71,21 @@ public class ChartController {
     // region 增删改查
 
     /**
-     * 创建
+     * 新增图表方法，不对外暴露
      *
-     * @param chartAddRequest
-     * @param request
+     * @param chart
      * @return
      */
     @PostMapping("/add")
-    public BaseResponse<Long> addChart(@RequestBody ChartAddRequest chartAddRequest, HttpServletRequest request) {
-        if (chartAddRequest == null) {
-            throw new BusinessException(ErrorCode.PARAMS_ERROR);
+    public long addChart(@RequestBody Chart chart) {
+        if (chart == null) {
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,"图表空数据");
         }
-        Chart chart = new Chart();
-        BeanUtils.copyProperties(chartAddRequest, chart);
-        User loginUser = userService.getLoginUser(request);
-        chart.setUserId(loginUser.getId());
         boolean result = chartService.save(chart);
-        ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR);
-        long newChartId = chart.getId();
-        return ResultUtils.success(newChartId);
+        ThrowUtils.throwIf(!result, ErrorCode.OPERATION_ERROR,"图表保存失败");
+        return chart.getId();
     }
+
 
     /**
      * 删除
@@ -133,35 +136,8 @@ public class ChartController {
                 "\n" +
                 "示例： 输入： 分析需求:分析网站用户增长情况 图表类型:柱状图 数据:日期,用户数 1号,10 2号,20 3号,30\n" +
                 "\n" +
-                "期望输出： 【【【【 { \"title\": { \"text\": \"分析网站用户增长情况\" }, \"xAxis\": { \"type\": \"category\", \"data\": [\"1号\", \"2号\", \"3号\"] }, \"yAxis\": { \"type\": \"value\" }, \"series\": [ { \"name\": \"用户数\", \"type\": \"bar\", \"data\": [10, 20, 30] } ] } '【【【【' 结论： 从数据看，网站用户数由1号的10人增长到2号的20人，再到3号的30人，呈现出明显的上升趋势。这表明在这段时间内网站用户吸引力增强，可能与推广活动、内容更新或其他外部因素有关。\n";
-//                +
-//                "【【【【【\n" +
-//                "{\n" +
-//                "    title: {\n" +
-//                "        text: '网站用户增长情况',\n" +
-//                "        subtext: ''\n" +
-//                "        },\n" +
-//                "    tooltip: {\n" +
-//                "        trigger: 'axis',\n" +
-//                "        axisPointer: {\n" +
-//                "            type: 'shadow'\n" +
-//                "            }\n" +
-//                "    },\n" +
-//                "    legend: {\n" +
-//                "        data: ['用户数']\n" +
-//                "        },\n" +
-//                "    xAxis: {\n" +
-//                "        data: ['1号', '2号', '3号']\n" +
-//                "    },\n" +
-//                "    yAxis: {},\n" +
-//                "    series: [{\n" +
-//                "        name: '用户数',\n" +
-//                "        type: 'bar',\n" +
-//                "        data: [10, 20, 30]\n" +
-//                "    }]\n" +
-//                "}\n" +
-//                "【【【【【\n" +
-//                "根据数据分析可得，该网站用户数量逐日增长，时间越长，用户数量增长越多。\n";
+                "期望输出： 【【【【 { \"title\": { \"text\": \"分析网站用户增长情况\" }, \"xAxis\": { \"type\": \"category\", \"data\": [\"1号\", \"2号\", \"3号\"] }, \"yAxis\": { \"type\": \"value\" }, \"series\": [ { \"name\": \"用户数\", \"type\": \"bar\", \"data\": [10, 20, 30] } ] } 【【【【 结论： 从数据看，网站用户数由1号的10人增长到2号的20人，再到3号的30人，呈现出明显的上升趋势。这表明在这段时间内网站用户吸引力增强，可能与推广活动、内容更新或其他外部因素有关。\n";
+
 
         StringBuilder userInput = new StringBuilder();
         userInput.append(prompt).append("\n");
@@ -175,20 +151,26 @@ public class ChartController {
             throw new BusinessException(ErrorCode.SYSTEM_ERROR, "AI生成错误");
         }
         BiResponse biResponse = new BiResponse();
-//        biResponse.setGenChart(results[1].replace("'",""));
-//        biResponse.setGenResult(results[2].replace("'",""));
-        biResponse.setGenChart(results[1]);
+        biResponse.setGenChart(results[1].trim());
         biResponse.setGenResult(results[2]);
+        ChartResp chartResp = new ChartResp();
+        chartResp.setName(name);
+        chartResp.setGoal(goal);
+        chartResp.setChartData(csvData);
+        chartResp.setChartType(chartType);
+        chartResp.setGenChart(biResponse.getGenChart());
+        chartResp.setGenResult(biResponse.getGenResult());
+        chartResp.setUserId(loginUser.getId());
+
         Chart chart = new Chart();
         chart.setName(name);
         chart.setGoal(goal);
-        chart.setChartData(csvData);
         chart.setChartType(chartType);
         chart.setGenChart(biResponse.getGenChart());
         chart.setGenResult(biResponse.getGenResult());
         chart.setUserId(loginUser.getId());
-        boolean saveResult = chartService.save(chart);
-        ThrowUtils.throwIf(!saveResult,ErrorCode.SYSTEM_ERROR,"图表保存失败");
+        long chartId = this.addChart(chart);
+        chartService.createChartDataTable(csvData,chartId);
 
         return ResultUtils.success(biResponse);
 
@@ -208,11 +190,15 @@ public class ChartController {
         }
         Chart chart = new Chart();
         BeanUtils.copyProperties(chartUpdateRequest, chart);
-        long id = chartUpdateRequest.getId();
+        long chartId = chartUpdateRequest.getId();
+        String chartData = chartUpdateRequest.getChartData();
         // 判断是否存在
-        Chart oldChart = chartService.getById(id);
+        Chart oldChart = chartService.getById(chartId);
         ThrowUtils.throwIf(oldChart == null, ErrorCode.NOT_FOUND_ERROR);
         boolean result = chartService.updateById(chart);
+        boolean b = chartService.dropChartDataTable(chartId);
+        ThrowUtils.throwIf(b, ErrorCode.SYSTEM_ERROR,"删除原表数据失败");
+        chartService.createChartDataTable(chartData,chartId);
         return ResultUtils.success(result);
     }
 
@@ -228,6 +214,12 @@ public class ChartController {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
         Chart chart = chartService.getById(id);
+        List<Map<String, String>> chartDataList = chartService.getChartDataById(id);
+        ChartResp chartResp = new ChartResp();
+        BeanUtils.copyProperties(chart,chartResp);
+
+        chartResp.setChartData(chartDataList.toString());
+
         if (chart == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND_ERROR);
         }
@@ -267,7 +259,9 @@ public class ChartController {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
         User loginUser = userService.getLoginUser(request);
-        chartQueryRequest.setUserId(loginUser.getId());
+        Long userId = loginUser.getId();
+        redisLimiterManager.doRateLimit(userId);
+        chartQueryRequest.setUserId(userId);
         long current = chartQueryRequest.getCurrent();
         long size = chartQueryRequest.getPageSize();
         // 限制爬虫

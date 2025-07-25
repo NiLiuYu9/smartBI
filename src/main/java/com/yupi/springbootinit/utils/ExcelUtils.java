@@ -29,7 +29,7 @@ public class ExcelUtils {
         List<Map<Integer, String>> list = null;
         try {
             list = EasyExcel.read(multipartFile.getInputStream())
-                    .excelType(ExcelTypeEnum.XLSX)
+                    .excelType(ExcelTypeEnum.CSV)
                     .sheet()
                     .headRowNumber(0)
                     .doReadSync();

@@ -1,10 +1,10 @@
 package com.yupi.springbootinit.model.entity;
 
 import com.baomidou.mybatisplus.annotation.*;
+import lombok.Data;
 
 import java.io.Serializable;
 import java.util.Date;
-import lombok.Data;
 
 /**
  * 图表信息表
@@ -12,7 +12,7 @@ import lombok.Data;
  */
 @TableName(value ="chart")
 @Data
-public class Chart implements Serializable {
+public class ChartResp implements Serializable {
     /**
      * id
      */
@@ -39,6 +39,11 @@ public class Chart implements Serializable {
      * 生成的图表数据
      */
     private String genChart;
+
+    /**
+     * 图表数据
+     */
+    private String chartData;
 
     /**
      * 生成的分析结论
