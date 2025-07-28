@@ -1,12 +1,14 @@
 package com.yupi.springbootinit.utils;
 
 import cn.hutool.core.collection.CollUtil;
+import cn.hutool.core.io.FileUtil;
 import cn.hutool.core.util.StrUtil;
 import com.alibaba.excel.EasyExcel;
 import com.alibaba.excel.support.ExcelTypeEnum;
 import com.yupi.springbootinit.common.ErrorCode;
 import com.yupi.springbootinit.exception.BusinessException;
 import lombok.extern.slf4j.Slf4j;
+import net.bytebuddy.implementation.bytecode.Throw;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.util.ResourceUtils;
@@ -25,16 +27,17 @@ public class ExcelUtils {
 
     public static String excelToCSV(MultipartFile multipartFile) {
         StringBuilder stringBuilder = new StringBuilder();
-
+        String suffix = FileUtil.getSuffix(multipartFile.getOriginalFilename()).toUpperCase();
         List<Map<Integer, String>> list = null;
         try {
             list = EasyExcel.read(multipartFile.getInputStream())
-                    .excelType(ExcelTypeEnum.CSV)
+                    .excelType(ExcelTypeEnum.valueOf(suffix))
                     .sheet()
                     .headRowNumber(0)
                     .doReadSync();
         } catch (IOException e) {
             log.error("表格处理错误");
+            throw new BusinessException(ErrorCode.PARAMS_ERROR,"表格格式错误");
         }
         if (CollUtil.isEmpty(list)) {
             return "";

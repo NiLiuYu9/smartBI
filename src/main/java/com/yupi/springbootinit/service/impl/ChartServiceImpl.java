@@ -13,18 +13,19 @@ import org.springframework.stereotype.Service;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  *
  */
 @Service
 public class ChartServiceImpl extends ServiceImpl<ChartMapper, Chart>
-    implements ChartService{
+    implements ChartService {
     @Autowired
     private ChartMapper chartMapper;
 
     @Override
-    public boolean createChartDataTable(String data,long chartId) {
+    public boolean createChartDataTable(String data, long chartId) {
 
         char lineSeparator = '\n';
         String fieldSeparator = ",";
@@ -47,7 +48,7 @@ public class ChartServiceImpl extends ServiceImpl<ChartMapper, Chart>
         }
         int insertNum = chartMapper.batchInsert(chartId, rows.get(0), rows.subList(1, rows.size()));
 
-        ThrowUtils.throwIf(table != 0 && insertNum == 0, ErrorCode.SYSTEM_ERROR,"图表数据保存失败");
+        ThrowUtils.throwIf(table != 0 && insertNum == 0, ErrorCode.SYSTEM_ERROR, "图表数据保存失败");
 
         return true;
     }
@@ -61,6 +62,34 @@ public class ChartServiceImpl extends ServiceImpl<ChartMapper, Chart>
     @Override
     public List<Map<String, String>> getChartDataById(long chartId) {
         return chartMapper.getDataByChartId(chartId);
+    }
+
+    @Override
+    public String convertToCSV(List<Map<String, String>> data) {
+        if (data == null || data.isEmpty()) {
+            return "";
+        }
+
+        StringBuilder sb = new StringBuilder();
+
+        // 获取列名
+        Set<String> keys = data.get(0).keySet();
+        List<String> columns = new ArrayList<>(keys);
+
+        // 写表头
+        sb.append(String.join(",", columns)).append("\n");
+
+        // 写每行数据
+        for (Map<String, String> row : data) {
+            List<String> values = new ArrayList<>();
+            for (String col : columns) {
+                String value = row.getOrDefault(col, "");
+                values.add(value);
+            }
+            sb.append(String.join(",", values)).append("\n");
+        }
+
+        return sb.toString();
     }
 }
 
