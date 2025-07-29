@@ -1,4 +1,9 @@
 spring:
+  rabbitmq:
+    host: localhost
+    port: 5672
+    password: guest
+    username: guest
   application:
     name: yubi-backend
   # 默认 dev 环境
