@@ -7,6 +7,7 @@ import com.yupi.springbootinit.exception.ThrowUtils;
 import com.yupi.springbootinit.model.entity.Chart;
 import com.yupi.springbootinit.service.ChartService;
 import com.yupi.springbootinit.mapper.ChartMapper;
+import com.yupi.springbootinit.utils.ExcelUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -90,6 +91,22 @@ public class ChartServiceImpl extends ServiceImpl<ChartMapper, Chart>
         }
 
         return sb.toString();
+    }
+
+    @Override
+    public String assembleMessage2Ai(String goal, String csvData, String chartType) {
+        final String prompt = "请严格按照下面的输出格式生成结果，且不得添加任何多余内容（例如无关文字、注释、代码块标记或反引号）：\n" +
+                "\n" +
+                "【【【【 {\n" +
+                "生成 Echarts V5 的 option 配置对象 JSON 代码，要求为合法 JSON 格式,不要有转义符和{换行符}且不含任何额外内容(如注释或多余引号)} 【【【【 结论： {\n" +
+                "提供对数据的详细分析结论，内容应尽可能准确、详细，不允许添加其他无关文字或注释 }\n" +
+                "\n" +
+                "示例： 输入： 分析需求:分析网站用户增长情况 图表类型:柱状图 数据:日期,用户数 1号,10 2号,20 3号,30\n" +
+                "\n" +
+                "期望输出： 【【【【 { \"title\": { \"text\": \"分析网站用户增长情况\" }, \"xAxis\": { \"type\": \"category\", \"data\": [\"1号\", \"2号\", \"3号\"] }, \"yAxis\": { \"type\": \"value\" }, \"series\": [ { \"name\": \"用户数\", \"type\": \"bar\", \"data\": [10, 20, 30] } ] } 【【【【 结论： 从数据看，网站用户数由1号的10人增长到2号的20人，再到3号的30人，呈现出明显的上升趋势。这表明在这段时间内网站用户吸引力增强，可能与推广活动、内容更新或其他外部因素有关。\n";
+
+        return prompt + "\n" +
+                "分析需求:" + goal + "\n" + "图表类型:" + chartType + "\n" + "数据:" + csvData + "\n";
     }
 }
 

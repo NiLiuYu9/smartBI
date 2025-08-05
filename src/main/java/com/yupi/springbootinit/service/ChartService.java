@@ -14,4 +14,5 @@ public interface ChartService extends IService<Chart> {
     public boolean dropChartDataTable(long chartId);
     public List<Map<String,String>> getChartDataById(long chartId);
     public String convertToCSV(List<Map<String, String>> data);
+    public String assembleMessage2Ai(String goal,String csvData,String chartType);
 }

@@ -23,6 +23,8 @@ import com.yupi.springbootinit.model.entity.ChartResp;
 import com.yupi.springbootinit.model.entity.User;
 import com.yupi.springbootinit.model.enums.FileUploadBizEnum;
 import com.yupi.springbootinit.model.vo.BiResponse;
+import com.yupi.springbootinit.mq.MyMessageConsumer;
+import com.yupi.springbootinit.mq.MyMessageProducer;
 import com.yupi.springbootinit.service.ChartService;
 import com.yupi.springbootinit.service.UserService;
 import com.yupi.springbootinit.utils.ExcelUtils;
@@ -32,6 +34,7 @@ import net.bytebuddy.implementation.bytecode.Throw;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.springframework.amqp.AmqpException;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
@@ -42,6 +45,7 @@ import org.springframework.web.multipart.MultipartFile;
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import java.io.File;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -68,15 +72,14 @@ public class ChartController {
     private RedisLimiterManager redisLimiterManager;
 
     @Autowired
-    private ThreadPoolExecutor threadPoolExecutor;
-
-    @Resource
     private UserService userService;
 
-    private final static Gson GSON = new Gson();
+
+    @Autowired
+    private MyMessageProducer messageProducer;
+
 
     // region 增删改查
-
     /**
      * 新增图表方法，不对外暴露
      *
@@ -137,23 +140,9 @@ public class ChartController {
         String chartType = genChatByAiRequest.getChartType();
         ThrowUtils.throwIf(StringUtils.isBlank(goal), ErrorCode.PARAMS_ERROR, "目标为空");
         ThrowUtils.throwIf(StringUtils.isNotBlank(name) && name.length() > 100, ErrorCode.PARAMS_ERROR, "名称过长");
-
-        final String prompt = "请严格按照下面的输出格式生成结果，且不得添加任何多余内容（例如无关文字、注释、代码块标记或反引号）：\n" +
-                "\n" +
-                "【【【【 {\n" +
-                "生成 Echarts V5 的 option 配置对象 JSON 代码，要求为合法 JSON 格式,不要有转义符和{换行符}且不含任何额外内容(如注释或多余引号)} 【【【【 结论： {\n" +
-                "提供对数据的详细分析结论，内容应尽可能准确、详细，不允许添加其他无关文字或注释 }\n" +
-                "\n" +
-                "示例： 输入： 分析需求:分析网站用户增长情况 图表类型:柱状图 数据:日期,用户数 1号,10 2号,20 3号,30\n" +
-                "\n" +
-                "期望输出： 【【【【 { \"title\": { \"text\": \"分析网站用户增长情况\" }, \"xAxis\": { \"type\": \"category\", \"data\": [\"1号\", \"2号\", \"3号\"] }, \"yAxis\": { \"type\": \"value\" }, \"series\": [ { \"name\": \"用户数\", \"type\": \"bar\", \"data\": [10, 20, 30] } ] } 【【【【 结论： 从数据看，网站用户数由1号的10人增长到2号的20人，再到3号的30人，呈现出明显的上升趋势。这表明在这段时间内网站用户吸引力增强，可能与推广活动、内容更新或其他外部因素有关。\n";
-
-
-        StringBuilder userInput = new StringBuilder();
-        userInput.append(prompt).append("\n");
         String csvData = ExcelUtils.excelToCSV(multipartFile);
-        userInput.append("分析需求:" + goal).append("\n").append("图表类型:" + chartType).append("\n").append("数据:" + csvData).append("\n");
-        String askMessage = userInput.toString();
+        //组装prompt
+        String askMessage = chartService.assembleMessage2Ai(goal,csvData,chartType);
         String result = aiManager.doChat(askMessage);
         System.out.println(result);
         String[] results = result.split("【【【【");
@@ -197,6 +186,7 @@ public class ChartController {
             throw new BusinessException(ErrorCode.NOT_LOGIN_ERROR);
         }
         Long userId = loginUser.getId();
+        //限流
         redisLimiterManager.doRateLimit(userId);
         String name = genChatByAiRequest.getName();
         String goal = genChatByAiRequest.getGoal();
@@ -236,31 +226,13 @@ public class ChartController {
         userInput.append("分析需求:" + goal).append("\n").append("图表类型:" + chartType).append("\n").append("数据:" + csvData).append("\n");
         String askMessage = userInput.toString();
 
-        CompletableFuture.runAsync(() -> {
-            Chart updateChart = new Chart();
-            updateChart.setId(chartId);
-            updateChart.setStatus("running");
-            boolean updateFlag = chartService.updateById(updateChart);
-            if (!updateFlag) {
-                handleChartUpdateError(chartId, "更新图表running状态失败");
-                return;
-            }
-            String result = aiManager.doChat(askMessage);
-            String[] results = result.split("【【【【");
-            if (results.length < 3) {
-                handleChartUpdateError(chartId,"AI生成错误");
-                return;
-            }
-            String genChart = results[1].trim();
-            String genResult = results[2];
-            updateChart.setGenChart(genChart);
-            updateChart.setGenResult(genResult);
-            updateChart.setStatus("succeed");
-            updateFlag = chartService.updateById(updateChart);
-            if (!updateFlag) {
-                handleChartUpdateError(chartId, "更新图表succeed状态失败");
-            }
-        },threadPoolExecutor);
+        String messageQueueParameter = chartId + "/|" + askMessage;
+        try{
+            messageProducer.sendMessage(messageQueueParameter);
+        }catch (AmqpException e){
+            log.error(e.getMessage());
+            throw new BusinessException(ErrorCode.SYSTEM_ERROR,"消息队列发送失败");
+        }
         BiResponse biResponse = new BiResponse();
         biResponse.setChartId(chartId);
 //        biResponse.setGenChart(results[1].trim());

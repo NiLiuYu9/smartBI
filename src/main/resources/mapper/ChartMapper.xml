@@ -31,7 +31,7 @@
     </delete>
 
 <!--    根据chartId获取chart数据-->
-    <select id="getDataByChartId" parameterType="long" resultType="list">
+    <select id="getDataByChartId" parameterType="long" resultType="map">
         select * from chart_${chartId}
     </select>
 

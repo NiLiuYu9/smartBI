@@ -25,6 +25,6 @@ class MyMessageProducerTest {
      */
     void sendMessage() {
         // 调用消息生产者的 sendMessage 方法发送消息
-        myMessageProducer.sendMessage("code_exchange", "my_routingKey", "你好呀");
+        myMessageProducer.sendMessage("你好呀");
     }
 }

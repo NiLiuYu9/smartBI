@@ -13,7 +13,7 @@ public class PerformanceAspect {
     
     private static final Logger logger = LoggerFactory.getLogger(PerformanceAspect.class);
 
-    @Around("execution(* com.yupi.springbootinit.controller..*.*(..))")
+    @Around("execution(* com.yupi.springbootinit.controller..*.*(..)) || execution(* com.yupi.springbootinit.mq.MyMessageConsumer.receiveMessage(..))")
     public Object logPerformance(ProceedingJoinPoint joinPoint) throws Throwable {
         long startTime = System.currentTimeMillis();
         Object result = joinPoint.proceed(); // 执行目标方法

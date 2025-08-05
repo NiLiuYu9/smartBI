@@ -47,6 +47,8 @@ public class Chart implements Serializable {
 
     private String status;
 
+    //允许更新为null值
+    @TableField(updateStrategy = FieldStrategy.IGNORED)
     private String execMessage;
 
     /**
