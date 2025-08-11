@@ -63,7 +63,7 @@ mybatis-plus:
 
 deepseek:
   client:
-    secretId: AKIDUr216NcmkdWK5e0Edx62mKYcXGn9KJ6i
-    secretKey: WpupneMerxsdaQ3TDp6B4jBQcicLsV4b
+    secretId:
+    secretKey:
 #    我不是密钥123AKIDUr216NcmkdWK5e0Edx62mKYcXGn9KJ6i
 #     我也不是密钥456WpupneMerxsdaQ3TDp6B4jBQcicLsV4b
