@@ -1,55 +1,49 @@
 package com.yupi.springbootinit.controller;
 
 import cn.hutool.core.util.StrUtil;
-import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.google.gson.Gson;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yupi.springbootinit.annotation.AuthCheck;
 import com.yupi.springbootinit.common.BaseResponse;
 import com.yupi.springbootinit.common.DeleteRequest;
 import com.yupi.springbootinit.common.ErrorCode;
 import com.yupi.springbootinit.common.ResultUtils;
-import com.yupi.springbootinit.constant.CommonConstant;
-import com.yupi.springbootinit.constant.FileConstant;
 import com.yupi.springbootinit.constant.UserConstant;
 import com.yupi.springbootinit.exception.BusinessException;
 import com.yupi.springbootinit.exception.ThrowUtils;
 import com.yupi.springbootinit.manager.AiManager;
 import com.yupi.springbootinit.manager.RedisLimiterManager;
 import com.yupi.springbootinit.model.dto.chart.*;
-import com.yupi.springbootinit.model.dto.file.UploadFileRequest;
 import com.yupi.springbootinit.model.entity.Chart;
 import com.yupi.springbootinit.model.entity.ChartResp;
 import com.yupi.springbootinit.model.entity.User;
-import com.yupi.springbootinit.model.enums.FileUploadBizEnum;
+import com.yupi.springbootinit.model.enums.RedisPrefix;
 import com.yupi.springbootinit.model.vo.BiResponse;
-import com.yupi.springbootinit.mq.MyMessageConsumer;
+import com.yupi.springbootinit.model.vo.ChartMetaVO;
+import com.yupi.springbootinit.model.vo.GenResultVo;
 import com.yupi.springbootinit.mq.MyMessageProducer;
 import com.yupi.springbootinit.service.ChartService;
 import com.yupi.springbootinit.service.UserService;
 import com.yupi.springbootinit.utils.ExcelUtils;
-import com.yupi.springbootinit.utils.SqlUtils;
 import lombok.extern.slf4j.Slf4j;
-import net.bytebuddy.implementation.bytecode.Throw;
 import org.apache.commons.lang3.ObjectUtils;
-import org.apache.commons.lang3.RandomStringUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.amqp.AmqpException;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
-import java.io.File;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ThreadPoolExecutor;
+import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * 帖子接口
@@ -78,9 +72,18 @@ public class ChartController {
     @Autowired
     private MyMessageProducer messageProducer;
 
+    @Autowired
+    private RedisTemplate<String,Object> redisTemplate;
+
+    @Autowired
+    private ObjectMapper objectMapper;
+
+
 
     // region 增删改查
     /**
+     * @RequestParam接收表单和键值对参数，本质是键值对
+     * @RequestBody接收请求体中的参数，本质是字节流
      * 新增图表方法，不对外暴露
      *
      * @param chart
@@ -323,18 +326,91 @@ public class ChartController {
     @PostMapping("/my/list/page")
     public BaseResponse<Page<Chart>> listMyChartByPage(@RequestBody ChartQueryRequest chartQueryRequest,
                                                        HttpServletRequest request) {
+        //todo 把结果写入数据库后写入redis,更新total，判断total不一致问题
         if (chartQueryRequest == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
-        User loginUser = userService.getLoginUser(request);
-        Long userId = loginUser.getId();
-        chartQueryRequest.setUserId(userId);
         long current = chartQueryRequest.getCurrent();
         long size = chartQueryRequest.getPageSize();
+        User loginUser = userService.getLoginUser(request);
+        Long userId = loginUser.getId();
+
+        //先查redis缓存
+        Integer total = (Integer) redisTemplate.opsForValue().get("total_chartNo"+userId);
+        if (null != total) {
+            //获取当前真实缓存
+            Long cacheSize = redisTemplate.opsForZSet().zCard("sorted_chartId" + userId);
+            if (cacheSize >= current * size) {
+                //获取排序好的分页chartId
+                Set<Object> chartIds = redisTemplate.opsForZSet().reverseRange("sorted_chartId" + userId, (current - 1) * size, current * size - 1);
+                //获取排序好的分页元数据
+                List<Object> sortedPageChartMeta = redisTemplate.opsForHash().multiGet(RedisPrefix.userId_charts.name() + userId, chartIds);
+                ArrayList<Chart> chartRecords = new ArrayList<>();
+                for (Object chartMetaVOMap : sortedPageChartMeta) {
+
+                    Chart chart = new Chart();
+                    ChartMetaVO metaVO = (ChartMetaVO) chartMetaVOMap;
+                    String status = metaVO.getStatus();
+                    if (status.equals("succeed")) {
+                        //获取数据
+                        GenResultVo genResultVo = (GenResultVo) redisTemplate.opsForValue().get(RedisPrefix.chart_results.name() + metaVO.getChartId());
+                        BeanUtils.copyProperties(genResultVo, chart);
+                    }
+                    BeanUtils.copyProperties(metaVO, chart);
+                    chartRecords.add(chart);
+                }
+                Page<Chart> page = new Page<>(current, size);
+                page.setRecords(chartRecords);
+                page.setCurrent(current);
+                page.setSize(size);
+                page.setTotal(total);
+                return ResultUtils.success(page);
+            }
+        }
+
+
+
+
+
+
+        chartQueryRequest.setUserId(userId);
+
         // 限制爬虫
         ThrowUtils.throwIf(size > 20, ErrorCode.PARAMS_ERROR);
         Page<Chart> chartPage = chartService.page(new Page<>(current, size),
-                getQueryWrapper(chartQueryRequest));
+                getQueryWrapper(chartQueryRequest).orderByDesc(Chart::getCreateTime));
+
+        long realTotal = chartPage.getTotal();
+
+        //写redis缓存
+        //写入当前有多少条数据
+        redisTemplate.opsForValue().set("total_chartNo"+userId,realTotal);
+        //todo 设置过期时间
+        for (Chart chart : chartPage.getRecords()) {
+            ChartMetaVO chartMetaVO = new ChartMetaVO();
+            chartMetaVO.setChartId(chart.getId());
+            chartMetaVO.setGoal(chart.getGoal());
+            chartMetaVO.setStatus(chart.getStatus());
+            chartMetaVO.setName(chart.getName());
+            redisTemplate.opsForHash().put(RedisPrefix.userId_charts.name() + userId,chart.getId().toString(),chartMetaVO);
+            //缓存排序后的图表
+            redisTemplate.opsForZSet().add("sorted_chartId"+userId,chart.getId().toString(),chart.getCreateTime().getTime());
+            //如果生成成功就缓存生成结果
+            if (chart.getStatus().equals("succeed")){
+                String genChart = chart.getGenChart();
+                String genResult = chart.getGenResult();
+                if (StrUtil.hasBlank(genChart,genResult)){
+                    log.error("缓存读取chart结果失败+{}",chart.getId());
+                    continue;
+                    //todo 看一下在succeed的情况下会不会存空结果
+                }
+                GenResultVo genResultVo = new GenResultVo();
+                genResultVo.setGenChart(genChart);
+                genResultVo.setGenResult(genResult);
+                redisTemplate.opsForValue().set(RedisPrefix.chart_results.name()+chart.getId(),genResultVo);
+            }
+        }
+
         return ResultUtils.success(chartPage);
     }
 
@@ -373,8 +449,8 @@ public class ChartController {
      * @param chartQueryRequest
      * @return
      */
-    private QueryWrapper<Chart> getQueryWrapper(ChartQueryRequest chartQueryRequest) {
-        QueryWrapper<Chart> queryWrapper = new QueryWrapper<>();
+    private LambdaQueryWrapper<Chart> getQueryWrapper(ChartQueryRequest chartQueryRequest) {
+        LambdaQueryWrapper<Chart> queryWrapper = new LambdaQueryWrapper<>();
         if (chartQueryRequest == null) {
             return queryWrapper;
         }
@@ -383,17 +459,13 @@ public class ChartController {
         String goal = chartQueryRequest.getGoal();
         String chartType = chartQueryRequest.getChartType();
         Long userId = chartQueryRequest.getUserId();
-        String sortField = chartQueryRequest.getSortField();
-        String sortOrder = chartQueryRequest.getSortOrder();
 
-        queryWrapper.eq(id != null && id > 0, "id", id);
-        queryWrapper.eq(StringUtils.isNotBlank(goal), "goal", goal);
-        queryWrapper.like(StringUtils.isNotBlank(name), "name", name);
-        queryWrapper.eq(StringUtils.isNotBlank(chartType), "chartType", chartType);
-        queryWrapper.eq(ObjectUtils.isNotEmpty(userId), "userId", userId);
-        queryWrapper.eq("isDelete", false);
-        queryWrapper.orderBy(SqlUtils.validSortField(sortField), sortOrder.equals(CommonConstant.SORT_ORDER_ASC),
-                sortField);
+        queryWrapper.eq(id != null && id > 0, Chart::getId, id);
+        queryWrapper.eq(StringUtils.isNotBlank(goal), Chart::getGoal, goal);
+        queryWrapper.like(StringUtils.isNotBlank(name), Chart::getName, name);
+        queryWrapper.eq(StringUtils.isNotBlank(chartType), Chart::getChartType, chartType);
+        queryWrapper.eq(ObjectUtils.isNotEmpty(userId), Chart::getUserId, userId);
+        queryWrapper.eq(Chart::getIsDelete, false);
         return queryWrapper;
     }
 

@@ -31,7 +31,7 @@ public class RetryFailedGenChart {
     /**
      * 每分钟执行一次
      */
-    @Scheduled(fixedRate = 60 * 1000)
+//    @Scheduled(fixedRate = 60 * 1000)
     public void run() {
         log.info("定时处理失败任务执行");
         LambdaQueryWrapper<Chart> lambdaQueryWrapper = new LambdaQueryWrapper<>();

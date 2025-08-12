@@ -32,8 +32,10 @@ public class ThreadPoolExecutorConfig {
                 return thread;
             }
         };
-        // 创建一个新的线程池，线程池核心大小为2，最大线程数为4，
+        // 创建一个新的线程池，线程池核心大小为2，最大线程数为4，在任务队列满后才会创建核心线程以外的线程
         // 非核心线程空闲时间为100秒，任务队列为阻塞队列，长度为4，使用自定义的线程工厂创建线程
+        //拒绝策略AbortPolicy(抛异常交给异常处理器)、CallerRunsPolicy(任务交给调用者线程执行)
+        //      DiscardPolicy(静默丢弃新任务)、DiscardOldestPolicy(丢弃最旧任务，重试当前提交)
         ThreadPoolExecutor threadPoolExecutor = new ThreadPoolExecutor(2, 4, 100, TimeUnit.SECONDS,
                 new ArrayBlockingQueue<>(4), threadFactory);
         // 返回创建的线程池
