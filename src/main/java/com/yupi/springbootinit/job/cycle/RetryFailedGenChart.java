@@ -31,7 +31,7 @@ public class RetryFailedGenChart {
     /**
      * 每分钟执行一次
      */
-//    @Scheduled(fixedRate = 60 * 1000)
+    @Scheduled(fixedRate = 60 * 1000)
     public void run() {
         log.info("定时处理失败任务执行");
         LambdaQueryWrapper<Chart> lambdaQueryWrapper = new LambdaQueryWrapper<>();
@@ -42,10 +42,11 @@ public class RetryFailedGenChart {
                 (faieldChart)-> {
                     if (StrUtil.isBlank(faieldChart.getGenChart())) {
                         Long chartId = faieldChart.getId();
+                        Long userId = faieldChart.getUserId();
                         List<Map<String, String>> chartListData = chartService.getChartDataById(chartId);
                         String csvData = chartService.convertToCSV(chartListData);
                         String askMessage = chartService.assembleMessage2Ai(faieldChart.getGoal(), csvData, faieldChart.getChartType());
-                        String parameters = chartId + "/|" + askMessage;
+                        String parameters = userId+"/|"+chartId + "/|" + askMessage;
                         messageProducer.sendMessage(parameters);
                     }else {
                         faieldChart.setStatus("succeed");

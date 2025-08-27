@@ -1,5 +1,6 @@
 package com.yupi.springbootinit.controller;
 
+import cn.hutool.core.collection.CollUtil;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -30,6 +31,8 @@ import com.yupi.springbootinit.utils.ExcelUtils;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.amqp.AmqpException;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -43,6 +46,8 @@ import org.springframework.web.multipart.MultipartFile;
 import javax.annotation.Resource;
 import javax.servlet.http.HttpServletRequest;
 import java.util.*;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -71,6 +76,9 @@ public class ChartController {
 
     @Autowired
     private MyMessageProducer messageProducer;
+
+    @Autowired
+    private RedissonClient redissonClient;
 
     @Autowired
     private RedisTemplate<String,Object> redisTemplate;
@@ -229,7 +237,7 @@ public class ChartController {
         userInput.append("分析需求:" + goal).append("\n").append("图表类型:" + chartType).append("\n").append("数据:" + csvData).append("\n");
         String askMessage = userInput.toString();
 
-        String messageQueueParameter = chartId + "/|" + askMessage;
+        String messageQueueParameter = userId+"/|"+chartId + "/|" + askMessage;
         try{
             messageProducer.sendMessage(messageQueueParameter);
         }catch (AmqpException e){
@@ -240,7 +248,9 @@ public class ChartController {
         biResponse.setChartId(chartId);
 //        biResponse.setGenChart(results[1].trim());
 //        biResponse.setGenResult(results[2]);
-
+        //更新版本号使用户感知图表更新
+        String userVersionKey = userId + ":chartCache:ver";
+        redisTemplate.opsForValue().increment(userVersionKey);
 
         return ResultUtils.success(biResponse);
 
@@ -326,7 +336,8 @@ public class ChartController {
     @PostMapping("/my/list/page")
     public BaseResponse<Page<Chart>> listMyChartByPage(@RequestBody ChartQueryRequest chartQueryRequest,
                                                        HttpServletRequest request) {
-        //todo 把结果写入数据库后写入redis,更新total，判断total不一致问题
+
+
         if (chartQueryRequest == null) {
             throw new BusinessException(ErrorCode.PARAMS_ERROR);
         }
@@ -335,81 +346,88 @@ public class ChartController {
         User loginUser = userService.getLoginUser(request);
         Long userId = loginUser.getId();
 
-        //先查redis缓存
-        Integer total = (Integer) redisTemplate.opsForValue().get("total_chartNo"+userId);
-        if (null != total) {
-            //获取当前真实缓存
-            Long cacheSize = redisTemplate.opsForZSet().zCard("sorted_chartId" + userId);
-            if (cacheSize >= current * size) {
-                //获取排序好的分页chartId
-                Set<Object> chartIds = redisTemplate.opsForZSet().reverseRange("sorted_chartId" + userId, (current - 1) * size, current * size - 1);
-                //获取排序好的分页元数据
-                List<Object> sortedPageChartMeta = redisTemplate.opsForHash().multiGet(RedisPrefix.userId_charts.name() + userId, chartIds);
-                ArrayList<Chart> chartRecords = new ArrayList<>();
-                for (Object chartMetaVOMap : sortedPageChartMeta) {
+        //读缓存
+        String userVersionKey = userId + ":chartCache:ver";
+        //先读版本号
+        Integer cacheVersion = (Integer) redisTemplate.opsForValue().get(userVersionKey);
+        if (null == cacheVersion){
+            cacheVersion = 1;
+            //写入首次缓存的版本号
+            //随机ttl防止雪崩
+            long VersionTtl = 600 + ThreadLocalRandom.current().nextInt(100);
+            Boolean ok = redisTemplate.opsForValue().setIfAbsent(userVersionKey, cacheVersion,VersionTtl, TimeUnit.SECONDS);
+            if (!ok){
+                //读数据库
+                cacheVersion=-1;
+            }
+        }
+        String pageKey = userId + ":chartCache:page" + current + ":" + cacheVersion;
+        //读当前版本号对应的分页
+        ChartCachePageData cachePageData = (ChartCachePageData) redisTemplate.opsForValue().get(pageKey);
 
-                    Chart chart = new Chart();
-                    ChartMetaVO metaVO = (ChartMetaVO) chartMetaVOMap;
-                    String status = metaVO.getStatus();
-                    if (status.equals("succeed")) {
-                        //获取数据
-                        GenResultVo genResultVo = (GenResultVo) redisTemplate.opsForValue().get(RedisPrefix.chart_results.name() + metaVO.getChartId());
-                        BeanUtils.copyProperties(genResultVo, chart);
+        Page<Chart> chartPage = new Page<>();
+
+        //读分页为空说明缓存过期，重建
+        if (null == cachePageData){
+
+            chartQueryRequest.setUserId(userId);
+
+            // 限制爬虫
+            ThrowUtils.throwIf(size > 20, ErrorCode.PARAMS_ERROR);
+
+            //防止缓存击穿
+            String lockKey = "lock:"+pageKey;
+            RLock lock = redissonClient.getLock(lockKey);
+            boolean acquired = false;
+            try {
+                acquired = lock.tryLock(100, TimeUnit.MILLISECONDS);
+                //没拿到锁
+                if (!acquired){
+                    //短暂退避后再读一次缓存
+                    Thread.sleep(60);
+                    cachePageData = (ChartCachePageData) redisTemplate.opsForValue().get(pageKey);
+                    //缓存仍然为null，读数据库
+                    if (null == cachePageData){
+                        chartPage = chartService.page(new Page<>(current, size),
+                                getQueryWrapper(chartQueryRequest).orderByDesc(Chart::getCreateTime));
+                        return ResultUtils.success(chartPage);
                     }
-                    BeanUtils.copyProperties(metaVO, chart);
-                    chartRecords.add(chart);
+                }else {
+                    //拿到锁，二次检验缓存防止重复重建
+                    cacheVersion = (Integer) redisTemplate.opsForValue().get(userVersionKey);
+                    pageKey = userId + ":chartCache:page" + current + ":" + cacheVersion;
+                    cachePageData = (ChartCachePageData) redisTemplate.opsForValue().get(pageKey);
+                    if (null == cachePageData) {
+                        chartPage = chartService.page(new Page<>(current, size),
+                                getQueryWrapper(chartQueryRequest).orderByDesc(Chart::getCreateTime));
+                        cachePageData = new ChartCachePageData(chartPage.getRecords(), chartPage.getTotal());
+                        cacheVersion = (Integer) redisTemplate.opsForValue().get(userVersionKey);
+                        pageKey = userId + ":chartCache:page" + current + ":" + cacheVersion;
+                        long PageTtl;
+                        //防止缓存穿透
+                        if (CollUtil.isEmpty(chartPage.getRecords())) {
+                            PageTtl = 50 + ThreadLocalRandom.current().nextInt(60);
+                        } else {
+                            PageTtl = 600 + ThreadLocalRandom.current().nextInt(60);
+                        }
+                        redisTemplate.opsForValue().set(pageKey, cachePageData, PageTtl, TimeUnit.SECONDS);
+                    }
                 }
-                Page<Chart> page = new Page<>(current, size);
-                page.setRecords(chartRecords);
-                page.setCurrent(current);
-                page.setSize(size);
-                page.setTotal(total);
-                return ResultUtils.success(page);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new BusinessException(ErrorCode.SYSTEM_ERROR,"查询我的图表异常");
+            }finally {
+                if (acquired && lock.isHeldByCurrentThread()) {
+                    lock.unlock();
+                }
             }
         }
 
 
-
-
-
-
-        chartQueryRequest.setUserId(userId);
-
-        // 限制爬虫
-        ThrowUtils.throwIf(size > 20, ErrorCode.PARAMS_ERROR);
-        Page<Chart> chartPage = chartService.page(new Page<>(current, size),
-                getQueryWrapper(chartQueryRequest).orderByDesc(Chart::getCreateTime));
-
-        long realTotal = chartPage.getTotal();
-
-        //写redis缓存
-        //写入当前有多少条数据
-        redisTemplate.opsForValue().set("total_chartNo"+userId,realTotal);
-        //todo 设置过期时间
-        for (Chart chart : chartPage.getRecords()) {
-            ChartMetaVO chartMetaVO = new ChartMetaVO();
-            chartMetaVO.setChartId(chart.getId());
-            chartMetaVO.setGoal(chart.getGoal());
-            chartMetaVO.setStatus(chart.getStatus());
-            chartMetaVO.setName(chart.getName());
-            redisTemplate.opsForHash().put(RedisPrefix.userId_charts.name() + userId,chart.getId().toString(),chartMetaVO);
-            //缓存排序后的图表
-            redisTemplate.opsForZSet().add("sorted_chartId"+userId,chart.getId().toString(),chart.getCreateTime().getTime());
-            //如果生成成功就缓存生成结果
-            if (chart.getStatus().equals("succeed")){
-                String genChart = chart.getGenChart();
-                String genResult = chart.getGenResult();
-                if (StrUtil.hasBlank(genChart,genResult)){
-                    log.error("缓存读取chart结果失败+{}",chart.getId());
-                    continue;
-                    //todo 看一下在succeed的情况下会不会存空结果
-                }
-                GenResultVo genResultVo = new GenResultVo();
-                genResultVo.setGenChart(genChart);
-                genResultVo.setGenResult(genResult);
-                redisTemplate.opsForValue().set(RedisPrefix.chart_results.name()+chart.getId(),genResultVo);
-            }
-        }
+        chartPage.setRecords(cachePageData.getData());
+        chartPage.setCurrent(current);
+        chartPage.setSize(size);
+        chartPage.setTotal(cachePageData.getTotal());
 
         return ResultUtils.success(chartPage);
     }

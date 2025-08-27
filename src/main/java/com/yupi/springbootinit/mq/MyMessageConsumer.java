@@ -15,6 +15,7 @@ import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.AmqpHeaders;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -37,6 +38,9 @@ public class MyMessageConsumer {
     @Autowired
     private AiManager aiManager;
 
+    @Autowired
+    private RedisTemplate redisTemplate;
+
 
     /**
      * 接收消息的方法
@@ -56,7 +60,8 @@ public class MyMessageConsumer {
             throw new BusinessException(ErrorCode.PARAMS_ERROR, "请求参数不能为空");
         }
         String[] parameters = message.split("/\\|");
-        long chartId = Long.parseLong(parameters[0]);
+        long userId = Long.parseLong(parameters[0]);
+        long chartId = Long.parseLong(parameters[1]);
 
         Chart chart = chartService.getById(chartId);
         String status = chart.getStatus();
@@ -69,7 +74,7 @@ public class MyMessageConsumer {
         Chart updateChart = new Chart();
         boolean updateFlag;
         updateChart.setId(chartId);
-        String askMessage = parameters[1];
+        String askMessage = parameters[2];
         if (status.equals("wait")||status.equals("failed")) {
             updateChart.setStatus("running");
             updateFlag = chartService.updateById(updateChart);
@@ -92,6 +97,8 @@ public class MyMessageConsumer {
         updateChart.setGenResult(genResult);
         updateChart.setStatus("succeed");
         updateFlag = chartService.updateById(updateChart);
+
+
         if (!updateFlag) {
             safeNack(channel, deliveryTag);
             handleChartUpdateError(chartId, "更新图表succeed状态失败");
@@ -100,6 +107,10 @@ public class MyMessageConsumer {
         updateChart.setExecMessage(null);
         chartService.updateById(updateChart);
         safeAck(channel, deliveryTag);
+        String userVersionKey = userId + ":chartCache:ver";
+        if (redisTemplate.hasKey(userVersionKey)) {
+            redisTemplate.opsForValue().increment(userVersionKey);
+        }
         log.info("图表{}生成成功",chartId);
 
 
